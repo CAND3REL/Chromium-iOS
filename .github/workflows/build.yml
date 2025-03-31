@@ -34,7 +34,7 @@ jobs:
       - name: Fetch Chromium source (Shallow, No Hooks)
         run: |
           mkdir chromium && cd chromium
-          fetch --nohooks ios
+          fetch --nohooks --nohistory ios
           gclient sync --nohooks -r src@HEAD #Sync to the HEAD of src, don't fetch full tree.
 
       - name: Cache Chromium source
