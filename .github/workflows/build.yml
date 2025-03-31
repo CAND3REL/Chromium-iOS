@@ -1,4 +1,4 @@
-name: Build iOS IPA
+name: Build Chromium Blink for iOS (Optimized)
 
 on:
   push:
@@ -12,44 +12,60 @@ on:
 jobs:
   build:
     runs-on: macos-latest
-
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v3
+      - name: Checkout repository (Shallow)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1  # Only fetch the latest commit.  CRUCIAL optimization.
 
-    - name: Install depot_tools
-      run: |
-        cd $HOME
-        git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-        echo "$HOME/depot_tools" >> $GITHUB_PATH
+      - name: Set up depot_tools (Cached)
+        uses: actions/cache@v4
+        id: cache-depot-tools
+        with:
+          path: depot_tools
+          key: ${{ runner.os }}-depot-tools-v1
 
-    - name: Fetch Chromium Source
-      run: |
-        cd $HOME
-        mkdir -p ~/chromium && cd ~/chromium
-        fetch --no-history ios 
-        cd src
-        gclient sync
+      - name: Install depot_tools (if not cached)
+        if: steps.cache-depot-tools.outputs.cache-hit != 'true'
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          echo "$(pwd)/depot_tools" >> $GITHUB_PATH
 
-    - name: Generate Build Files
-      run: |
-        cd ~/chromium/src && mkdir -p out/Release-iphoneos
-        gn gen out/Release-iphoneos --args='is_debug=false target_os="ios" ios_enable_code_signing=false is_component_build=false target_cpu="arm64" use_blink=true'
+      - name: Fetch Chromium source (Shallow, No Hooks)
+        run: |
+          mkdir chromium && cd chromium
+          fetch --nohooks ios --no-history  # CRUCIAL: No history, much faster!
+          gclient sync --nohooks -r src@HEAD #Sync to the HEAD of src, don't fetch full tree.
 
-    - name: Build Chromium for iOS
-      run: |
-        cd ~/chromium/src
-        autoninja -C out/Release-iphoneos chrome
+      - name: Cache Chromium source
+        uses: actions/cache@v4
+        id: cache-chromium
+        with:
+          path: chromium
+          key: ${{ runner.os }}-chromium-v3-${{ hashFiles('chromium/src/DEPS') }} #Cache based on DEPS changes
+          restore-keys: |
+            ${{ runner.os }}-chromium-v3-
 
-    - name: Create .ipa File
-      run: |
-        cd ~/chromium/src/out/Release-iphoneos
-        mkdir -p Payload
-        cp -r chromium.app Payload/
-        zip -r chromium.ipa Payload
+      - name: Install dependencies (if chromium cache missed)
+        if: steps.cache-chromium.outputs.cache-hit != 'true'
+        run: |
+          cd chromium/src
+          ./build/install-build-deps.sh
+          sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v3
-      with:
-        name: ios-app
-        path: ~/chromium/src/out/Release-iphoneos/chromium.ipa
+      - name: Run GN to configure the build
+        run: |
+          cd chromium/src
+          gn gen out/ios --args='target_os="ios" target_cpu="arm64" is_component_build=false is_debug=false'
+
+      - name: Build Blink (Smaller Target)
+        run: |
+          cd chromium/src
+          ninja -C out/ios blink # Build a smaller, representative Blink target
+          # Other good minimal targets:  content_shell,  blink_core (even smaller)
+
+      - name: Upload Blink Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: blink-build-ios
+          path: chromium/src/out/ios
